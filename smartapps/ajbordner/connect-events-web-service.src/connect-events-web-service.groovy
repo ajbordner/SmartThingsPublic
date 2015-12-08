@@ -30,6 +30,7 @@ preferences {
     input "acceleration", "capability.accelerationSensor", title: "Accelerometer", multiple: true, required: true
     input "contact", "capability.contactSensor", title: "Contact sensor", multiple: true, required: true
     input "motion", "capability.motionSensor", title: "Motion sensor", multiple: true, required: true
+    input "batteries", "capability.battery", title: "Batteries", multiple: true, required: false
   }
 }
 
@@ -54,6 +55,11 @@ mappings {
      GET: "postEventsHandler"
     ]
   }
+  path("/getBatteryLevels") {
+    action: [
+     GET: "listBatteries"
+    ]
+  }
 }
 
 def listEvents() {
@@ -68,6 +74,10 @@ def listEvents() {
         }
     }
     return resp
+}
+
+def listBatteries() {
+	return ["hub_id": location.hubs[0].id, "location": location.name,"info": batteries?.collect{[id: it.id, name: it.name, label: it.label, status: it.currentValue('battery')]}?.sort{it.name}]
 }
 
 def setPowerCutoff() {
@@ -109,18 +119,18 @@ def initialize() {
 }
 
 def addRawEvent(evt) {
-	state.rawEvtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: evt.value, date: evt.isoDate, location: location.name, hub_id: evt.hubId]
+	state.rawEvtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: evt.value, date: evt.isoDate]
 }
 
 def addEvent(evt) {
-log.debug "addEvent: ${evt.device.name}, ${evt.name}, ${evt.value}"
-	state.evtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: evt.value, date: evt.isoDate, duration: null, location: location.name, hub_id: evt.hubId]
+	//log.debug "addEvent: ${evt.device.name}, ${evt.name}, ${evt.value}"
+	state.evtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: evt.value, date: evt.isoDate, duration: null]
 }
 
 def addOutletEvent(evt, eventValue, duration) {
   state.powerChangeTime = (new Date()).time
   def intDuration = duration.setScale(0, BigDecimal.ROUND_HALF_UP)
-  state.evtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: eventValue, date: evt.isoDate, duration: intDuration, location: location.name, hub_id: evt.hubId]
+  state.evtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: eventValue, date: evt.isoDate, duration: intDuration]
 }
 
 def checkForMotion() {
@@ -139,13 +149,13 @@ def checkForMotion() {
             def duration = (now - state.motionChangeTime)/1000.0 - timeSinceStateChange
             state.motionChangeTime = now
             //log.debug "MOTION INACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
-    		state.evtData << [name: motion.name[0], label: motion.label[0], event_type: "motion", value: "inactive", date: latestMotionState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP), location: location.name, hub_id: motion.hub.id[0]]
+    		state.evtData << [name: motion.name[0], label: motion.label[0], event_type: "motion", value: "inactive", date: latestMotionState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP),]
     	} else if (!state.motionActive && (currentMotionState.value[0] == "active")) {
         	state.motionActive = true
             def duration = (now - state.motionChangeTime)/1000.0            
             state.motionChangeTime = now
             //log.debug "MOTION ACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
-    		state.evtData << [name: motion.name[0], label: motion.label[0], event_type: "motion", value: "active", date: latestMotionState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP), location: location.name, hub_id: motion.hub.id[0]]
+    		state.evtData << [name: motion.name[0], label: motion.label[0], event_type: "motion", value: "active", date: latestMotionState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
     	}
     }
 }
@@ -154,7 +164,7 @@ def postEventsHandler() {
 	checkForMotion()
 	// Push if any processed event data
    	if (state.evtData.size() > 0) {
-		def json = new groovy.json.JsonBuilder(["processed": state.evtData, "raw": state.rawEvtData]).toString()
+		def json = new groovy.json.JsonBuilder(["hub_id": location.hubs[0].id, "location": location.name, "processed": state.evtData, "raw": state.rawEvtData]).toString()
     	//log.debug("JSON: ${json}")
     	def params = [
     		uri: "https://pamf-connect-propane.linkages.org/smartthings.php",
