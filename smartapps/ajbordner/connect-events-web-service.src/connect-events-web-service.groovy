@@ -112,9 +112,9 @@ def initialize() {
     state.powerOn = null
     state.powerChangeTime = (new Date()).time
     state.powerCutoff = 1.0
-    state.motionActive = null
-    state.motionChangeTime = (new Date()).time
-    state.motionDelay = 60.0
+    state.activeState = ['Motion Sensor': null, 'Multipurpose A': null, 'Multipurpose B': null]
+    state.changeTime = ['Motion Sensor': (new Date()).time, 'Multipurpose A': (new Date()).time,'Multipurpose B': (new Date()).time]
+    state.delay = ['Motion Sensor': 60, 'Multipurpose A': 60, 'Multipurpose B': 60]
     schedule("0 * * * * ?",postEventsHandler)
 }
 
@@ -133,35 +133,38 @@ def addOutletEvent(evt, eventValue, duration) {
   state.evtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: eventValue, date: evt.isoDate, duration: intDuration]
 }
 
-def checkForMotion() {
-	// Only change motion sensor activity if persists for longer than state.motionDelay seconds
+def checkForActivity(sensor, sensorAttribute) {
+	// Only change sensor activity if persists for longer than state.delay seconds
     def now = (new Date()).time
-    def latestMotionState = motion.latestState("motion");
-    def currentMotionState = motion.currentState("motion");
-    def latestTime = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",latestMotionState.dateCreated[0])
+    def latestActivityState = sensor.latestState(sensorAttribute);
+    def currentActivityState = sensor.currentState(sensorAttribute);
+    def latestTime = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",latestActivityState.dateCreated[0])
     def timeSinceStateChange = (now - latestTime.time)/1000.0   // time since last state change in seconds
-    //log.debug "TEST: ${state.motionActive}, ${currentMotionState.value[0]}, ${timeSinceStateChange}"
-    if (state.motionActive == null) {
-    	state.motionActive = (currentMotionState.value[0] == "active")
+    def sensorName = sensor.name[0]
+    //log.debug "${sensorName}: ${state.activeState[sensorName]}, ${timeSinceStateChange}; ${state.activeState.inspect()}; ${state.changeTime.inspect()}"
+    if (state.activeState[sensorName] == null) {
+    	state.activeState[sensorName] = (currentActivityState.value[0] == "active")
     } else {
-    	if (state.motionActive && (currentMotionState.value[0] == "inactive") && (timeSinceStateChange >= state.motionDelay)) {
-        	state.motionActive = false
-            def duration = (now - state.motionChangeTime)/1000.0 - timeSinceStateChange
-            state.motionChangeTime = now
-            //log.debug "MOTION INACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
-    		state.evtData << [name: motion.name[0], label: motion.label[0], event_type: "motion", value: "inactive", date: latestMotionState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP),]
-    	} else if (!state.motionActive && (currentMotionState.value[0] == "active")) {
-        	state.motionActive = true
-            def duration = (now - state.motionChangeTime)/1000.0            
-            state.motionChangeTime = now
-            //log.debug "MOTION ACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
-    		state.evtData << [name: motion.name[0], label: motion.label[0], event_type: "motion", value: "active", date: latestMotionState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
+    	if (state.activeState[sensorName] && (currentActivityState.value[0] == "inactive") && (timeSinceStateChange >= state.delay[sensorName])) {
+            state.activeState[sensorName] = false
+            def duration = (now - state.changeTime[sensorName])/1000.0 - timeSinceStateChange
+            state.changeTime[sensorName] = now
+            //log.debug "${sensorName} INACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
+    		state.evtData << [name: sensor.name[0], label: sensor.label[0], event_type: sensorAttribute, value: "inactive", date: latestActivityState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
+    	} else if (!state.activeState[sensorName] && (currentActivityState.value[0] == "active")) {
+            state.activeState[sensorName] = true
+            def duration = (now - state.changeTime[sensorName])/1000.0            
+            state.changeTime[sensorName] = now
+            //log.debug "${sensorName} ACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
+    		state.evtData << [name: sensor.name[0], label: sensor.label[0], event_type: sensorAttribute, value: "active", date: latestActivityState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
     	}
     }
 }
 
 def postEventsHandler() {
-	checkForMotion()
+	checkForActivity(motion,"motion")
+    checkForActivity(acceleration,"acceleration")
+    //checkForMotion()
 	// Push if any processed event data
    	if (state.evtData.size() > 0) {
 		def json = new groovy.json.JsonBuilder(["hub_id": location.hubs[0].id, "location": location.name, "processed": state.evtData, "raw": state.rawEvtData]).toString()
@@ -201,7 +204,7 @@ def switchHandler(evt) {
 }
 
 def accelerationHandler(evt) {
-	addEvent(evt)
+	checkForActivity(acceleration,"acceleration")
     addRawEvent(evt)
 }
 
@@ -211,6 +214,6 @@ def contactHandler(evt) {
 }
 
 def motionHandler(evt) {
-	checkForMotion()
+	checkForActivity(motion,"motion")
     addRawEvent(evt)
 }
