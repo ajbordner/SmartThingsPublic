@@ -30,6 +30,7 @@ preferences {
     input "acceleration", "capability.accelerationSensor", title: "Accelerometer", multiple: true, required: true
     input "contact", "capability.contactSensor", title: "Contact sensor", multiple: true, required: true
     input "motion", "capability.motionSensor", title: "Motion sensor", multiple: true, required: true
+    input "water", "capability.waterSensor", title: "Water sensor", multiple: true, required: false
     input "batteries", "capability.battery", title: "Batteries", multiple: true, required: false
   }
 }
@@ -55,9 +56,29 @@ mappings {
      GET: "postEventsHandler"
     ]
   }
+  path("/setUpdateInterval") {
+    action: [
+     GET: "setUpdateInterval"
+    ]
+  }
+  path("/getUpdateInterval") {
+    action: [
+     GET: "getUpdateInterval"
+    ]
+  }
   path("/getBatteryLevels") {
     action: [
      GET: "listBatteries"
+    ]
+  }
+  path("/getStateVars") {
+    action: [
+     GET: "getStateVars"
+    ]
+  }
+  path("/getLatestEventTimes") {
+    action: [
+     GET: "getLatestEventTimes"
     ]
   }
 }
@@ -89,14 +110,18 @@ def getPowerCutoff() {
 	return [watts: state.powerCutoff]
 }
 
+def getStateVars() {
+	return [state: state]
+}
+
 def installed() {
-	log.debug "Installed with settings: ${settings}"
+	log.debug "Installed for hub ${location.hubs[0].id} with settings: ${settings}"
 
 	initialize()
 }
 
 def updated() {
-	log.debug "Updated with settings: ${settings}"
+	log.debug "Updated for hub ${location.hubs[0].id} with settings: ${settings}"
 
 	unsubscribe()
 	initialize()
@@ -107,15 +132,27 @@ def initialize() {
     subscribe(acceleration, "acceleration", accelerationHandler)
     subscribe(contact, "contact", contactHandler)
     subscribe(motion, "motion", motionHandler)
+    subscribe(water, "water", waterHandler)
     state.evtData = []
     state.rawEvtData = []
     state.powerOn = null
     state.powerChangeTime = (new Date()).time
-    state.powerCutoff = 1.0
+    state.powerCutoff = 5.0
     state.activeState = ['Motion Sensor': null, 'Multipurpose A': null, 'Multipurpose B': null]
     state.changeTime = ['Motion Sensor': (new Date()).time, 'Multipurpose A': (new Date()).time,'Multipurpose B': (new Date()).time]
     state.delay = ['Motion Sensor': 60, 'Multipurpose A': 60, 'Multipurpose B': 60]
-    schedule("0 * * * * ?",postEventsHandler)
+    state.cronMinutes = 1  // every minute
+    schedule("0 0/${state.cronMinutes} * * * ?",postEventsHandler)
+}
+
+def setUpdateInterval() {
+  state.cronMinutes = params?.minutes.toInteger()
+  unschedule()
+  schedule("0 0/${state.cronMinutes} * * * ?",postEventsHandler)
+}
+
+def getUpdateInterval() {
+  return [minutes: state.cronMinutes]
 }
 
 def addRawEvent(evt) {
@@ -138,27 +175,40 @@ def checkForActivity(sensor, sensorAttribute) {
     def now = (new Date()).time
     def latestActivityState = sensor.latestState(sensorAttribute);
     def currentActivityState = sensor.currentState(sensorAttribute);
-    def latestTime = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",latestActivityState.dateCreated[0])
-    def timeSinceStateChange = (now - latestTime.time)/1000.0   // time since last state change in seconds
-    def sensorName = sensor.name[0]
-    //log.debug "${sensorName}: ${state.activeState[sensorName]}, ${timeSinceStateChange}; ${state.activeState.inspect()}; ${state.changeTime.inspect()}"
-    if (state.activeState[sensorName] == null) {
-    	state.activeState[sensorName] = (currentActivityState.value[0] == "active")
-    } else {
-    	if (state.activeState[sensorName] && (currentActivityState.value[0] == "inactive") && (timeSinceStateChange >= state.delay[sensorName])) {
+    for (def sensorNum = 0; sensorNum < sensor.name.size(); sensorNum++) {
+      def latestTime = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",latestActivityState.dateCreated[sensorNum])
+      def timeSinceStateChange = (now - latestTime.time)/1000.0   // time since last state change in seconds
+      def sensorName = sensor.name[sensorNum]
+      //log.debug "${sensorName}: ${state.activeState[sensorName]}, ${timeSinceStateChange}; ${state.activeState.inspect()}; ${state.changeTime.inspect()}"
+      if (state.activeState[sensorName] == null) {
+    	state.activeState[sensorName] = (currentActivityState.value[sensorNum] == "active")
+      } else {
+    	  if (state.activeState[sensorName] && (currentActivityState.value[sensorNum] == "inactive") && (timeSinceStateChange >= state.delay[sensorName])) {
             state.activeState[sensorName] = false
             def duration = (now - state.changeTime[sensorName])/1000.0 - timeSinceStateChange
             state.changeTime[sensorName] = now
             //log.debug "${sensorName} INACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
-    		state.evtData << [name: sensor.name[0], label: sensor.label[0], event_type: sensorAttribute, value: "inactive", date: latestActivityState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
-    	} else if (!state.activeState[sensorName] && (currentActivityState.value[0] == "active")) {
+    		state.evtData << [name: sensorName, label: sensor.label[sensorNum], event_type: sensorAttribute, value: "inactive", date: latestActivityState.dateCreated[sensorNum], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
+    	} else if (!state.activeState[sensorName] && (currentActivityState.value[sensorNum] == "active")) {
             state.activeState[sensorName] = true
             def duration = (now - state.changeTime[sensorName])/1000.0            
             state.changeTime[sensorName] = now
             //log.debug "${sensorName} ACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
-    		state.evtData << [name: sensor.name[0], label: sensor.label[0], event_type: sensorAttribute, value: "active", date: latestActivityState.dateCreated[0], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
+    		state.evtData << [name: sensorName, label: sensor.label[sensorNum], event_type: sensorAttribute, value: "active", date: latestActivityState.dateCreated[sensorNum], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
     	}
     }
+  }
+}
+
+def getLatestEventTimes() {
+	def resp = [(switches.name[0]): switches.latestState("power").dateCreated[0], (motion.name[0]): motion.latestState("motion").dateCreated[0]] 
+    for (def sensorNum = 0; sensorNum < acceleration.name.size(); sensorNum++) {
+      resp << ["${acceleration.name[sensorNum]} acceleration": acceleration.latestState("acceleration").dateCreated[sensorNum], "${acceleration.name[sensorNum]} contact": contact.latestState("contact").dateCreated[sensorNum]]
+    }
+	if (water != null) {
+    	resp << [(water.name[0]): water?.latestState("water").dateCreated[0]]
+    }
+	return resp
 }
 
 def postEventsHandler() {
@@ -215,5 +265,10 @@ def contactHandler(evt) {
 
 def motionHandler(evt) {
 	checkForActivity(motion,"motion")
+    addRawEvent(evt)
+}
+
+def waterHandler(evt) {
+	addEvent(evt)
     addRawEvent(evt)
 }
