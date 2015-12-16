@@ -31,6 +31,7 @@ preferences {
     input "contact", "capability.contactSensor", title: "Contact sensor", multiple: true, required: true
     input "motion", "capability.motionSensor", title: "Motion sensor", multiple: true, required: true
     input "water", "capability.waterSensor", title: "Water sensor", multiple: true, required: false
+    input "presence", "capability.presenceSensor", title: "Presence sensor", multiple: true, required: false
     input "batteries", "capability.battery", title: "Batteries", multiple: true, required: false
   }
 }
@@ -133,6 +134,7 @@ def initialize() {
     subscribe(contact, "contact", contactHandler)
     subscribe(motion, "motion", motionHandler)
     subscribe(water, "water", waterHandler)
+    subscribe(presence, "presence", presenceHandler)
     state.evtData = []
     state.rawEvtData = []
     state.powerOn = null
@@ -140,6 +142,7 @@ def initialize() {
     state.powerCutoff = 5.0
     state.activeState = ['Motion Sensor': null, 'Multipurpose A': null, 'Multipurpose B': null]
     state.changeTime = ['Motion Sensor': (new Date()).time, 'Multipurpose A': (new Date()).time,'Multipurpose B': (new Date()).time]
+    state.lastActivity = ['Motion Sensor': [null,'inactive'], 'Multipurpose A contact': [null,'closed'], 'Multipurpose A acceleration': [null,'active'], 'Multipurpose B contact': [null,'closed'], 'Multipurpose B acceleration': [null,'inactive']]
     state.delay = ['Motion Sensor': 60, 'Multipurpose A': 60, 'Multipurpose B': 60]
     state.cronMinutes = 1  // every minute
     schedule("0 0/${state.cronMinutes} * * * ?",postEventsHandler)
@@ -201,12 +204,9 @@ def checkForActivity(sensor, sensorAttribute) {
 }
 
 def getLatestEventTimes() {
-	def resp = [(switches.name[0]): switches.latestState("power").dateCreated[0], (motion.name[0]): motion.latestState("motion").dateCreated[0]] 
-    for (def sensorNum = 0; sensorNum < acceleration.name.size(); sensorNum++) {
-      resp << ["${acceleration.name[sensorNum]} acceleration": acceleration.latestState("acceleration").dateCreated[sensorNum], "${acceleration.name[sensorNum]} contact": contact.latestState("contact").dateCreated[sensorNum]]
-    }
-	if (water != null) {
-    	resp << [(water.name[0]): water?.latestState("water").dateCreated[0]]
+	def resp = [(switches.name[0]): [switches.latestState("power").dateCreated[0], switches.latestState("power").value[0]]]
+    for (dev in state.lastActivity) {
+    	resp << dev
     }
 	return resp
 }
@@ -256,19 +256,35 @@ def switchHandler(evt) {
 def accelerationHandler(evt) {
 	checkForActivity(acceleration,"acceleration")
     addRawEvent(evt)
+    if (evt.value == "active") {
+    	state.lastActivity["${evt.device.name} acceleration"] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
+    }
 }
 
 def contactHandler(evt) {
 	addEvent(evt)
     addRawEvent(evt)
+    if (evt.value == "closed") {
+    	state.lastActivity["${evt.device.name} contact"] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
+    }
 }
 
 def motionHandler(evt) {
 	checkForActivity(motion,"motion")
     addRawEvent(evt)
+    if (evt.value == "active") {
+    	state.lastActivity[evt.device.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
+    }
 }
 
 def waterHandler(evt) {
 	addEvent(evt)
     addRawEvent(evt)
+    state.lastActivity[evt.device.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
+}
+
+def presenceHandler(evt) {
+	addEvent(evt)
+    addRawEvent(evt)
+    state.lastActivity[evt.device.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
 }
