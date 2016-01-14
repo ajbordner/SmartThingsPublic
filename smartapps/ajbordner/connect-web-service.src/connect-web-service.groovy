@@ -96,7 +96,7 @@ def listEvents() {
     if (presence != null) {
     	allEvents = allEvents + presence.eventsSince(startDate, [max: maxNumEvents])
     }
-   	def resp = []
+   	def rawData = []
     allEvents.each { dev ->
     	dev.each {
         //log.debug "name = ${it.device?.name}"
@@ -104,17 +104,18 @@ def listEvents() {
         //log.debug "event_type = ${it?.name}"
         //log.debug "value = ${it?.value}"
         //log.debug "date = ${it?.isoDate}"
-        if (it?.name != null) {
-        	resp << [name: it.device?.name, label : it.device?.label, event_type: it?.name, value: it?.value, date: it?.isoDate]
+        if (it?.name != null && it?.name != "temperature") {
+        	rawData << [name: it.device?.name, label : it.device?.label, event_type: it?.name, value: it?.value, date: it?.isoDate]
          }
-    		//resp << [label: it?.displayName, name: it?.name, value: it?.value, date: it?.isoDate]
+    		//rawData << [label: it?.displayName, name: it?.name, value: it?.value, date: it?.isoDate]
         }
     }
+    def resp = ["hub_id": motion.hub.zigbeeId[0], "location": location.name, "raw": rawData]
     return resp
 }
 
 def listBatteries() {
-	return ["hub_id": location.hubs[0].id, "location": location.name,"info": batteries?.collect{[id: it.id, name: it.name, label: it.label, status: it.currentValue('battery')]}?.sort{it.name}]
+	return ["hub_id": motion.hub.zigbeeId[0], "location": location.name,"info": batteries?.collect{[id: it.id, name: it.name, label: it.label, status: it.currentValue('battery')]}?.sort{it.name}]
 }
 
 def setPowerCutoff() {
@@ -131,13 +132,13 @@ def getStateVars() {
 }
 
 def installed() {
-	log.debug "Installed for hub ${location.hubs[0].id} with settings: ${settings}"
+	log.debug "Installed for hub ${motion.hub.zigbeeId[0]} with settings: ${settings}"
 
 	initialize()
 }
 
 def updated() {
-	log.debug "Updated for hub ${location.hubs[0].id} with settings: ${settings}"
+	log.debug "Updated for hub ${motion.hub.zigbeeId[0]} with settings: ${settings}"
 
 	unsubscribe()
 	initialize()
@@ -158,7 +159,7 @@ def initialize() {
     state.activeState = ['Motion Sensor': null, 'Multipurpose A': null, 'Multipurpose B': null, 'Arrival Sensor': null]
     state.changeTime = ['Motion Sensor': (new Date()).time, 'Multipurpose A': (new Date()).time, 'Multipurpose B': (new Date()).time, 'Arrival Sensor': (new Date()).time]
     state.lastActivity = ['Motion Sensor': [null, 'inactive'], 'Multipurpose A contact': [null, 'closed'], 'Multipurpose A acceleration': [null, 'active'], 'Multipurpose B contact': [null, 'closed'], 'Multipurpose B acceleration': [null, 'inactive'], 'Arrival Sensor': [null, 'not_present']]
-    state.delay = ['Motion Sensor': 60, 'Multipurpose A': 60, 'Multipurpose B': 60, 'Arrival Sensor': 60]
+    state.delay = ['Motion Sensor': 30, 'Multipurpose A': 60, 'Multipurpose B': 60, 'Arrival Sensor': 60]
     state.cronMinutes = 1  // every minute
     state.cronSeconds = (new Random()).nextInt(60);
     schedule("${state.cronSeconds} 0/${state.cronMinutes} * * * ?", postEventsHandler)
@@ -175,7 +176,9 @@ def getUpdateInterval() {
 }
 
 def addRawEvent(evt) {
-	state.rawEvtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: evt.value, date: evt.isoDate]
+	if (evt.name != "temperature") {
+		state.rawEvtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: evt.value, date: evt.isoDate]
+    }
 }
 
 def addEvent(evt) {
@@ -201,22 +204,22 @@ def checkForActivity(sensor, sensorAttribute, requirePersistantInactivation = tr
       def timeSinceStateChange = (now - latestTime.time)/1000.0   // time since last state change in seconds
       def sensorName = sensor.name[sensorNum]
       //log.debug "${sensorName}: ${state.activeState[sensorName]}, ${timeSinceStateChange}; ${state.activeState.inspect()}; ${state.changeTime.inspect()}"
-      //log.debug "sensorName = ${sensorName}, activeState = ${state.activeState[sensorName]} , currentActivityState = ${currentActivityState.value[sensorNum]}, timeSinceStateChange = ${timeSinceStateChange}"
+      log.debug "sensorName = ${sensorName}, activeState = ${state.activeState[sensorName]} , currentActivityState = ${currentActivityState.value[sensorNum]}, timeSinceStateChange = ${timeSinceStateChange}"
       if (state.activeState[sensorName] == null) {
-      	//log.debug "${sensorName} NULL"
+      	log.debug "${sensorName} NULL"
     	state.activeState[sensorName] = (currentActivityState.value[sensorNum] == activeStateName) 
       } else {
     	  if (state.activeState[sensorName] && (currentActivityState.value[sensorNum] == inactiveStateName) && (!requirePersistantInactivation || (timeSinceStateChange >= state.delay[sensorName]))) {
             state.activeState[sensorName] = false
             def duration = (now - state.changeTime[sensorName])/1000.0 - timeSinceStateChange
             state.changeTime[sensorName] = now
-            //log.debug "${sensorName} INACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
+            log.debug "${sensorName} INACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
     	    state.evtData << [name: sensorName, label: sensor.label[sensorNum], event_type: sensorAttribute, value: inactiveStateName, date: latestActivityState.dateCreated[sensorNum], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
     	} else if (!state.activeState[sensorName] && (currentActivityState.value[sensorNum] == activeStateName) && (!requirePersistantActivation || (timeSinceStateChange >= state.delay[sensorName]))) {
             state.activeState[sensorName] = true
             def duration = (now - state.changeTime[sensorName])/1000.0            
             state.changeTime[sensorName] = now
-            //log.debug "${sensorName} ACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
+            log.debug "${sensorName} ACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
     	    state.evtData << [name: sensorName, label: sensor.label[sensorNum], event_type: sensorAttribute, value: activeStateName, date: latestActivityState.dateCreated[sensorNum], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
     	}
     }
@@ -232,13 +235,13 @@ def getLatestEventTimes() {
 }
 
 def postEventsHandler() {
-    checkForActivity(motion, "motion", true, true)
+    checkForActivity(motion, "motion")
     checkForActivity(acceleration,"acceleration")
     if (presence != null) {
     	checkForActivity(presence, "presence", "present", "not present", true, true)
      }
      // Push if any processed event data
-     def json = new groovy.json.JsonBuilder(["hub_id": location.hubs[0].id, "location": location.name, "processed": state.evtData, "raw": state.rawEvtData]).toString()
+     def json = new groovy.json.JsonBuilder(["hub_id": motion.hub.zigbeeId[0], "location": location.name, "processed": state.evtData, "raw": state.rawEvtData]).toString()
     //log.debug("JSON: ${json}")
     def params = [
    	uri: "https://connect.linkages.org/smartthings.php",
@@ -296,7 +299,7 @@ def contactHandler(evt) {
 }
 
 def motionHandler(evt) {
-    checkForActivity(motion, "motion", true, true)
+    checkForActivity(motion, "motion")
     addRawEvent(evt)
     if (evt.value == "active") {
     	state.lastActivity[evt.device.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
