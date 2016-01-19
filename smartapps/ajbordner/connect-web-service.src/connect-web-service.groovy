@@ -82,6 +82,11 @@ mappings {
      GET: "getLatestEventTimes"
     ]
   }
+  path("/getAppName") {
+    action: [
+     GET: "getAppName"
+    ]
+  }
 }
 
 def listEvents() {
@@ -131,6 +136,10 @@ def getStateVars() {
 	return [state: state]
 }
 
+def getAppName() {
+	return [name: app.label]
+}
+
 def installed() {
 	log.debug "Installed for hub ${motion.hub.zigbeeId[0]} with settings: ${settings}"
 
@@ -153,13 +162,14 @@ def initialize() {
     subscribe(presence, "presence", presenceHandler)
     state.evtData = []
     state.rawEvtData = []
+    state.maxPower = 0
     state.powerOn = null
     state.powerChangeTime = (new Date()).time
     state.powerCutoff = 5.0
     state.activeState = ['Motion Sensor': null, 'Multipurpose A': null, 'Multipurpose B': null, 'Arrival Sensor': null]
-    state.changeTime = ['Motion Sensor': (new Date()).time, 'Multipurpose A': (new Date()).time, 'Multipurpose B': (new Date()).time, 'Arrival Sensor': (new Date()).time]
+    state.changeTime = ['Motion Sensor': (new Date()).time, 'Multipurpose A': (new Date()).time, 'Multipurpose B': (new Date()).time, 'Outlet': (new Date()).time, 'Arrival Sensor': (new Date()).time]
     state.lastActivity = ['Motion Sensor': [null, 'inactive'], 'Multipurpose A contact': [null, 'closed'], 'Multipurpose A acceleration': [null, 'active'], 'Multipurpose B contact': [null, 'closed'], 'Multipurpose B acceleration': [null, 'inactive'], 'Arrival Sensor': [null, 'not_present']]
-    state.delay = ['Motion Sensor': 30, 'Multipurpose A': 60, 'Multipurpose B': 60, 'Arrival Sensor': 60]
+    state.delay = ['Motion Sensor': 30, 'Multipurpose A': 60, 'Multipurpose B': 60, 'Outlet': 60, 'Arrival Sensor': 60]
     state.cronMinutes = 1  // every minute
     state.cronSeconds = (new Random()).nextInt(60);
     schedule("${state.cronSeconds} 0/${state.cronMinutes} * * * ?", postEventsHandler)
@@ -176,9 +186,23 @@ def getUpdateInterval() {
 }
 
 def addRawEvent(evt) {
-	if (evt.name != "temperature") {
-		state.rawEvtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: evt.value, date: evt.isoDate]
-    }
+  if (evt.name == "temperature") {
+  	return []
+  }
+ def now = (new Date()).time 
+ def value = evt.value
+  if (evt.name == "power")  {
+    def timeSinceChange = (now - state.changeTime['Outlet'])/1000.0
+    state.maxPower = Math.max(state.maxPower, Float.parseFloat(evt.value))
+    //log.debug "timeSinceChange = ${timeSinceChange}"
+    if (timeSinceChange >= state.delay['Outlet']) {
+      	value = sprintf("%.1f",state.maxPower)
+      	//log.debug "OUTLET: ${state.changeTime['Outlet']}, ${now}, ${timeSinceChange}, ${value} watts"
+     	state.changeTime['Outlet'] = now
+        state.maxPower = 0
+     }
+  }
+  state.rawEvtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: value, date: evt.isoDate]
 }
 
 def addEvent(evt) {
@@ -204,22 +228,22 @@ def checkForActivity(sensor, sensorAttribute, requirePersistantInactivation = tr
       def timeSinceStateChange = (now - latestTime.time)/1000.0   // time since last state change in seconds
       def sensorName = sensor.name[sensorNum]
       //log.debug "${sensorName}: ${state.activeState[sensorName]}, ${timeSinceStateChange}; ${state.activeState.inspect()}; ${state.changeTime.inspect()}"
-      log.debug "sensorName = ${sensorName}, activeState = ${state.activeState[sensorName]} , currentActivityState = ${currentActivityState.value[sensorNum]}, timeSinceStateChange = ${timeSinceStateChange}"
+      //log.debug "sensorName = ${sensorName}, activeState = ${state.activeState[sensorName]} , currentActivityState = ${currentActivityState.value[sensorNum]}, timeSinceStateChange = ${timeSinceStateChange}"
       if (state.activeState[sensorName] == null) {
-      	log.debug "${sensorName} NULL"
+      	//log.debug "${sensorName} NULL"
     	state.activeState[sensorName] = (currentActivityState.value[sensorNum] == activeStateName) 
       } else {
     	  if (state.activeState[sensorName] && (currentActivityState.value[sensorNum] == inactiveStateName) && (!requirePersistantInactivation || (timeSinceStateChange >= state.delay[sensorName]))) {
             state.activeState[sensorName] = false
             def duration = (now - state.changeTime[sensorName])/1000.0 - timeSinceStateChange
             state.changeTime[sensorName] = now
-            log.debug "${sensorName} INACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
+            //log.debug "${sensorName} INACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
     	    state.evtData << [name: sensorName, label: sensor.label[sensorNum], event_type: sensorAttribute, value: inactiveStateName, date: latestActivityState.dateCreated[sensorNum], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
     	} else if (!state.activeState[sensorName] && (currentActivityState.value[sensorNum] == activeStateName) && (!requirePersistantActivation || (timeSinceStateChange >= state.delay[sensorName]))) {
             state.activeState[sensorName] = true
             def duration = (now - state.changeTime[sensorName])/1000.0            
             state.changeTime[sensorName] = now
-            log.debug "${sensorName} ACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
+            //log.debug "${sensorName} ACTIVE ${duration.setScale(0, BigDecimal.ROUND_HALF_UP)}"
     	    state.evtData << [name: sensorName, label: sensor.label[sensorNum], event_type: sensorAttribute, value: activeStateName, date: latestActivityState.dateCreated[sensorNum], duration: duration.setScale(0, BigDecimal.ROUND_HALF_UP)]
     	}
     }
@@ -252,12 +276,14 @@ def postEventsHandler() {
     } catch ( groovyx.net.http.HttpResponseException ex ) {
        	log.debug "Unexpected response error for Connect production: ${ex.statusCode}"
     }
+    /*
     params.uri = "https://pamf-connect-propane.linkages.org/smartthings.php"  // also post data to staging
     try {
         httpPostJson(params)
     } catch ( groovyx.net.http.HttpResponseException ex ) {
        	log.debug "Unexpected response error for Connect staging: ${ex.statusCode}"
     }
+    */
     state.evtData = []   // clear processed event data
     state.rawEvtData = []  // clear raw event data
 }
