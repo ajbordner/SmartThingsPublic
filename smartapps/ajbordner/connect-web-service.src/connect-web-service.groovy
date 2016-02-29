@@ -87,6 +87,21 @@ mappings {
      GET: "getAppName"
     ]
   }
+  path("/resetData") {
+    action: [
+     GET: "resetData"
+    ]
+  }
+  path("/getDataSize") {
+    action: [
+     GET: "getDataSize"
+    ]
+  }
+  path("/getHubID") {
+    action: [
+     GET: "getHubID"
+    ]
+  }
 }
 
 def listEvents() {
@@ -140,14 +155,27 @@ def getAppName() {
 	return [name: app.label]
 }
 
+def resetData() {
+    state.evtData = []
+    state.rawEvtData = []
+}
+
+def getDataSize() {
+	return [processed: state.evtData.size(), raw: state.rawEvtData.size(), total: state.toString().length()]
+}
+
+def getHubID() {
+   return [hub_id: motion?.hub?.zigbeeId[0]]
+}
+
 def installed() {
-	log.debug "Installed for hub ${motion.hub.zigbeeId[0]} with settings: ${settings}"
+	log.debug "Installed with settings: ${settings}"
 
 	initialize()
 }
 
 def updated() {
-	log.debug "Updated for hub ${motion.hub.zigbeeId[0]} with settings: ${settings}"
+	log.debug "Updated with settings: ${settings}"
 
 	unsubscribe()
 	initialize()
@@ -160,6 +188,9 @@ def initialize() {
     subscribe(motion, "motion", motionHandler)
     subscribe(water, "water", waterHandler)
     subscribe(presence, "presence", presenceHandler)
+    state.uri = "https://connect.linkages.org/smartthings.php"
+    state.versionDate = "2016-02-25"
+    state.maxStateSize = 80000  // maximum state size is 100,000 bytes so do not append when current size is > state.maxStateSize
     state.evtData = []
     state.rawEvtData = []
     state.maxPower = 0
@@ -185,6 +216,13 @@ def getUpdateInterval() {
   return [minutes: state.cronMinutes, seconds: state.cronSeconds]
 }
 
+// Send events and clear if state size is near limit
+def checkStateSize() {
+  if (state.toString().length() > state.maxStateSize) {
+    postEventsHandler()  // send events and clear
+  }
+}
+
 def addRawEvent(evt) {
   if (evt.name == "temperature") {
   	return []
@@ -202,18 +240,21 @@ def addRawEvent(evt) {
         state.maxPower = 0
      }
   }
-  state.rawEvtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: value, date: evt.isoDate]
+  state.rawEvtData << [name: evt.device?.name, label : evt.device.label, event_type: evt.name, value: value, date: evt.isoDate]
+  checkStateSize()
 }
 
 def addEvent(evt) {
-	//log.debug "addEvent: ${evt.device.name}, ${evt.name}, ${evt.value}"
-	state.evtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: evt.value, date: evt.isoDate, duration: null]
+  //log.debug "addEvent: ${evt.device?.name}, ${evt.name}, ${evt.value}"
+  state.evtData << [name: evt.device?.name, label : evt.device.label, event_type: evt.name, value: evt.value, date: evt.isoDate, duration: null]
+  checkStateSize()	
 }
 
 def addOutletEvent(evt, eventValue, duration) {
   state.powerChangeTime = (new Date()).time
   def intDuration = duration.setScale(0, BigDecimal.ROUND_HALF_UP)
-  state.evtData << [name: evt.device.name, label : evt.device.label, event_type: evt.name, value: eventValue, date: evt.isoDate, duration: intDuration]
+  state.evtData << [name: evt.device?.name, label : evt.device.label, event_type: evt.name, value: eventValue, date: evt.isoDate, duration: intDuration]
+  checkStateSize()
 }
 
 def checkForActivity(sensor, sensorAttribute, requirePersistantInactivation = true, requirePersistantActivation = false, activeStateName = "active", inactiveStateName = "inactive") {
@@ -248,6 +289,7 @@ def checkForActivity(sensor, sensorAttribute, requirePersistantInactivation = tr
     	}
     }
   }
+  checkStateSize()
 }
 
 def getLatestEventTimes() {
@@ -262,13 +304,13 @@ def postEventsHandler() {
     checkForActivity(motion, "motion")
     checkForActivity(acceleration,"acceleration")
     if (presence != null) {
-    	checkForActivity(presence, "presence", "present", "not present", true, true)
+    	checkForActivity(presence, "presence", true, false, "present", "not present")
      }
      // Push if any processed event data
-     def json = new groovy.json.JsonBuilder(["hub_id": motion.hub.zigbeeId[0], "location": location.name, "processed": state.evtData, "raw": state.rawEvtData]).toString()
+     def json = new groovy.json.JsonBuilder(["hub_id": motion.hub.zigbeeId[0], "location": location.name, "versionDate": state.versionDate, "processed": state.evtData, "raw": state.rawEvtData]).toString()
     //log.debug("JSON: ${json}")
     def params = [
-   	uri: "https://connect.linkages.org/smartthings.php",
+   	uri: state.uri,
     	body: json
    	]
     try {
@@ -276,14 +318,6 @@ def postEventsHandler() {
     } catch ( groovyx.net.http.HttpResponseException ex ) {
        	log.debug "Unexpected response error for Connect production: ${ex.statusCode}"
     }
-    /*
-    params.uri = "https://pamf-connect-propane.linkages.org/smartthings.php"  // also post data to staging
-    try {
-        httpPostJson(params)
-    } catch ( groovyx.net.http.HttpResponseException ex ) {
-       	log.debug "Unexpected response error for Connect staging: ${ex.statusCode}"
-    }
-    */
     state.evtData = []   // clear processed event data
     state.rawEvtData = []  // clear raw event data
 }
@@ -312,7 +346,7 @@ def accelerationHandler(evt) {
     checkForActivity(acceleration, "acceleration")
     addRawEvent(evt)
     if (evt.value == "active") {
-    	state.lastActivity["${evt.device.name} acceleration"] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
+    	state.lastActivity["${evt.device?.name} acceleration"] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
     }
 }
 
@@ -320,7 +354,7 @@ def contactHandler(evt) {
     addEvent(evt)
     addRawEvent(evt)
     if (evt.value == "closed") {
-    	state.lastActivity["${evt.device.name} contact"] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
+    	state.lastActivity["${evt.device?.name} contact"] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
     }
 }
 
@@ -328,18 +362,18 @@ def motionHandler(evt) {
     checkForActivity(motion, "motion")
     addRawEvent(evt)
     if (evt.value == "active") {
-    	state.lastActivity[evt.device.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
+    	state.lastActivity[evt.device?.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
     }
 }
 
 def waterHandler(evt) {
     addEvent(evt)
     addRawEvent(evt)
-    state.lastActivity[evt.device.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
+    state.lastActivity[evt.device?.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
 }
 
 def presenceHandler(evt) {
-    checkForActivity(presence, "presence", true, true, "present", "not present")
+    checkForActivity(presence, "presence", true, false, "present", "not present")
     addRawEvent(evt)
-    state.lastActivity[evt.device.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
+    state.lastActivity[evt.device?.name] = [new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC")), evt.value]
 }
